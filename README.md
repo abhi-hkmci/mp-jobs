@@ -1,3 +1,25 @@
 # mp-jobs
 
- google cloud Run job
+
+# how to test 
+
+1. set env variable as below 
+
+export DATABASE_URL="postgres://postgres:hkmci23get4@35.220.189.93:5432/get"
+
+
+## how to deploy 
+
+gcloud run jobs deploy mp-job1 \
+    --source ./mp-job1 \
+    --tasks 1 \
+    --set-env-vars DATABASE_URL="postgres://postgres:hkmci23get4@35.220.189.93:5432/get" \
+    --set-env-vars FAIL_RATE=0.1 \
+    --max-retries 2 \
+    --region asia-east2 \
+    --project=masterplanner
+
+
+## how to run 
+
+gcloud run jobs execute mp-job1 --region asia-east2
