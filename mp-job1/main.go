@@ -26,7 +26,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/objx"
 	"google.golang.org/api/iterator"
-	"google.golang.org/api/option"
 )
 
 func PgSqlRowsToJson(rows pgx.Rows) []byte {
@@ -104,7 +103,7 @@ func main() {
 
 	//  BIGQUERY
 	ctx := context.Background()
-	client, err := bigquery.NewClient(ctx, projectID, option.WithCredentialsFile("./mp.json"))
+	client, err := bigquery.NewClient(ctx, projectID)
 
 	if err != nil {
 		fmt.Println("Error: cannot connect BigQuery")
