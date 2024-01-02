@@ -29,6 +29,8 @@ go.work
 temp
 temp/*
 
+mp.json
+
 
 # git rm -r --cached . -f
 # git add -A
