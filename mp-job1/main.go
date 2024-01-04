@@ -1,107 +1,62 @@
-// Copyright 2021 Google LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     https://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-// [START cloudrun_jobs_quickstart]
 package main
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"reflect"
 
 	"cloud.google.com/go/bigquery"
 	"github.com/jackc/pgx/v5"
-	"github.com/stretchr/objx"
 	"google.golang.org/api/iterator"
 )
 
-func PgSqlRowsToJson(rows pgx.Rows) []byte {
+var projectID = "masterplanner"
+var trasnfered_shipment []string
+var pgConn *pgx.Conn
+
+func PgSqlRowsToJson(rows pgx.Rows) ([]byte, error) {
 
 	fieldDescriptions := rows.FieldDescriptions()
 	var columns []string
 
 	for _, col := range fieldDescriptions {
-		columns = append(columns,
-			string(col.Name))
+		columns = append(columns, string(col.Name))
 	}
 
 	count := len(columns)
 	tableData := make([]map[string]interface{}, 0)
-	valuePtrs := make([]interface{}, count)
 
 	for rows.Next() {
-
-		values, _ := rows.Values()
-		for i, v := range values {
-			// Handle null values gracefully
-			if v == nil {
-				valuePtrs[i] = new(interface{}) // Allocate a pointer to a nil interface
-			} else {
-				valuePtrs[i] = reflect.New(reflect.TypeOf(v)).Interface() // Allocate pointer to type
-			}
+		values, err := rows.Values()
+		if err != nil {
+			return nil, err
 		}
 
-		rows.Scan(valuePtrs...)
 		entry := make(map[string]interface{}, count)
 		for i, col := range columns {
-			var v interface{}
-			val := reflect.ValueOf(valuePtrs[i]).Elem().Interface()
+			val := values[i]
 
-			// Dereference pointer
-			if val == nil { // If the value is still nil, set it to an empty string
-				v = ""
+			// Handle null values gracefully
+			if val == nil {
+				entry[col] = ""
 			} else if b, ok := val.([]byte); ok {
-				v = string(b)
+				entry[col] = string(b)
 			} else {
-				v = val
+				entry[col] = val
 			}
-			entry[col] = v
 		}
 		tableData = append(tableData, entry)
 	}
-
-	jsonData, _ := json.Marshal(tableData)
-	return jsonData
-}
-
-func main() {
-
-	projectID := "masterplanner"
-
-	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
+	jsonData, err := json.Marshal(tableData)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
-		os.Exit(1)
+		return nil, err
 	}
-	defer conn.Close(context.Background())
-
-	sql := "SELECT * FROM public.shipments limit 2 "
-	rows, err := conn.Query(context.Background(), sql)
-
-	rows_json := PgSqlRowsToJson(rows)
-
-	// fmt.Println("JSON Result : ", string(rows_json))
-
-	// Declared an empty interface of type Array
-	var results []map[string]interface{}
-
-	// Unmarshal or Decode the JSON to the interface.
-	json.Unmarshal([]byte(rows_json), &results)
-
-	//  BIGQUERY
+	return jsonData, nil
+}
+func checkBigqueryConnection() (*bigquery.Client, context.Context, error) {
 	ctx := context.Background()
 	client, err := bigquery.NewClient(ctx, projectID)
 
@@ -121,50 +76,163 @@ func main() {
 	}
 	println("Client connection verified ")
 
-	m := objx.MustFromJSON(string(rows_json))
-	for key, value := range m {
-		fmt.Println(key, value)
+	return client, ctx, nil
+}
+
+// ... (Previous code)
+
+func deleteRows(idsToDelete []string, pgConn *pgx.Conn) ([]string, error) {
+	var deletedIDs []string
+
+	tx, err := pgConn.Begin(context.Background())
+	if err != nil {
+		return nil, err
 	}
 
-	// insert query  here ------------------------------------------------------------------------------------------
+	defer func() {
+		if err != nil {
+			tx.Rollback(context.Background())
+		}
+	}()
 
-	// for key, result := range results {
+	for _, id := range idsToDelete {
+		result, err := tx.Exec(context.Background(), "DELETE FROM public.shipments WHERE uid = $1", id)
+		if err != nil {
+			return nil, err
+		}
 
-	// 	fmt.Println("Reading Value for Key :", key)
+		// Check if the row was actually deleted
+		rowsAffected := result.RowsAffected()
+		if rowsAffected > 0 {
+			deletedIDs = append(deletedIDs, id)
+		}
+	}
 
-	// 	fmt.Println("uid :", result["uid"])
-	// 	fmt.Println("org_uid :", result["org_uid"])
-	// 	fmt.Println("properties :", result["properties"])
+	err = tx.Commit(context.Background())
+	if err != nil {
+		return nil, err
+	}
 
-	// 	bigquery_sql := fmt.Sprintf(`INSERT INTO logs.shipments (uid,org_uid,properties) VALUES (
-	// 		'` + result["uid"].(string) + `',
-	// 		'` + result["org_uid"].(string) + `'
-	// 		JSON"""` + result["properties"].(map[string]interface{}) + `"""
+	return deletedIDs, nil
+}
 
-	// 	)`)
+func serviceDB() {
 
-	// 	q := client.Query(bigquery_sql)
+	// REINDEX DATABASE  get ;
+	// REINDEX  SYSTEM get ;
+	// ANALYZE
+	// VACUUM  FULL ANALYZE ;
 
-	// 	// Execute the query
-	// 	result, err := q.Run(ctx)
-	// 	if err != nil {
-	// 		log.Fatalf("Failed to execute query: %v", err)
-	// 	}
+	_, err := pgConn.Exec(context.Background(), "REINDEX DATABASE get")
+	if err != nil {
+		// Handle errors appropriately
+		fmt.Println("Error executing maintanance query:", err)
+		return
+	}
+	_, err = pgConn.Exec(context.Background(), "REINDEX  SYSTEM get")
+	if err != nil {
+		// Handle errors appropriately
+		fmt.Println("Error executing maintanance query:", err)
+		return
+	}
+	_, err = pgConn.Exec(context.Background(), "ANALYZE")
+	if err != nil {
+		// Handle errors appropriately
+		fmt.Println("Error executing maintanance query:", err)
+		return
+	}
+	_, err = pgConn.Exec(context.Background(), "VACUUM FULL ANALYZE")
+	if err != nil {
+		// Handle errors appropriately
+		fmt.Println("Error executing maintanance query:", err)
+		return
+	}
+	fmt.Println("completed running maintanance query")
 
-	// 	// Wait for the job to complete
-	// 	status, err := result.Wait(ctx)
-	// 	if err != nil {
-	// 		log.Fatalf("Failed to wait for job completion: %v", err)
-	// 	}
+}
 
-	// 	// Check the job status for errors
-	// 	if err := status.Err(); err != nil {
-	// 		log.Fatalf("Query execution error: %v", err)
+func main() {
 
-	// 	}
+	var err error
+	pgConn, err = pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
+		os.Exit(1)
+	}
+	defer pgConn.Close(context.Background())
 
-	// 	println("Success")
+	sql := "SELECT * FROM public.shipments WHERE (properties ->> 'status' = '6') AND updated_at < CURRENT_TIMESTAMP - INTERVAL '3 months'"
+	//sql := "SELECT * FROM public.shipments limit 1"
+	rows, err := pgConn.Query(context.Background(), sql)
 
-	// } // loop end here
+	rowsJSON, err := PgSqlRowsToJson(rows)
+	if err != nil {
+		fmt.Printf("Error converting rows to JSON: %v\n", err)
+		return
+	}
+
+	client, ctx, err := checkBigqueryConnection()
+
+	var results []map[string]interface{}
+	json.Unmarshal([]byte(rowsJSON), &results)
+	for _, result := range results {
+
+		prop := result["properties"].(map[string]interface{})
+		propString, err := json.Marshal(prop)
+
+		var latlng = false
+		var lat = 0.0
+		var lng = 0.0
+		var ok = false
+		if lat, ok = prop["latitude"].(float64); ok {
+			if lng, ok = prop["longitude"].(float64); ok {
+				latlng = true
+			}
+		}
+		if latlng == true {
+			fmt.Printf("Value for key '%s': %v %v\n", "latitude", lat, lng)
+		}
+
+		if err != nil {
+			fmt.Println("Error marshaling JSON:", err)
+		} else {
+			//fmt.Println(string(propString))
+		}
+		// ST_GeogPoint(ST_X(ST_GeogFromText('POINT (longitude latitude)')), ST_Y(ST_GeogFromText('POINT (longitude latitude)')))
+		bigquerySQL := fmt.Sprintf(`INSERT INTO masterplanner.logs.shipments (uid, org_uid, properties,geog) VALUES (
+			'%s',
+			'%s',
+			JSON '%s',
+			ST_GEOGPOINT( %f, %f) 
+			)`, result["uid"].(string), result["org_uid"].(string), string(propString), lng, lat)
+
+		q := client.Query(bigquerySQL)
+
+		quryResult, err := q.Run(ctx)
+		if err != nil {
+			log.Fatalf("Failed to execute query: %v", err)
+		}
+
+		queryStatus, err := quryResult.Wait(ctx)
+		if err != nil {
+			log.Fatalf("Failed to wait for job completion: %v", err)
+		}
+
+		if err := queryStatus.Err(); err != nil {
+			log.Fatalf("Query execution error: %v", err)
+		}
+
+		fmt.Println("Successfully transferred " + result["uid"].(string))
+		trasnfered_shipment = append(trasnfered_shipment, result["uid"].(string))
+	}
+
+	deletedList, err := deleteRows(trasnfered_shipment, pgConn)
+
+	if reflect.DeepEqual(trasnfered_shipment, deletedList) {
+		fmt.Println("Success verifed")
+	} else {
+		fmt.Println("Partial success identified")
+	}
+	serviceDB()
 
 }

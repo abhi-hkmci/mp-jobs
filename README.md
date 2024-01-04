@@ -14,7 +14,6 @@ gcloud run jobs deploy mp-job1 \
     --source ./mp-job1 \
     --tasks 1 \
     --set-env-vars DATABASE_URL="postgres://postgres:hkmci23get4@35.220.189.93:5432/get" \
-    --set-env-vars FAIL_RATE=0.1 \
     --max-retries 2 \
     --region asia-east2 \
     --project=masterplanner
