@@ -5,12 +5,11 @@
 
 1. set env variable as below 
 
-export DATABASE_URL="postgres://postgres:hkmci23get4@35.220.189.93:5432/get"
 
 
 ## how to deploy 
 
-gcloud run jobs deploy mp-job1 \
+gcloud run jobs deploy stage-maintanance \
     --source ./mp-job1 \
     --tasks 1 \
     --set-env-vars DATABASE_URL="postgres://postgres:hkmci23get4@35.220.189.93:5432/get" \
